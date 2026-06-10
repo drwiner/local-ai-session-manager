@@ -74,7 +74,10 @@ export default async function Home({ searchParams }: Props) {
             {total.toLocaleString()} sessions · {projects.length} projects
             {lastIndexed && (
               <>
-                {" · "}indexed {new Date(Number(lastIndexed)).toLocaleString()}
+                {" · "}indexed{" "}
+                <span suppressHydrationWarning>
+                  {new Date(Number(lastIndexed)).toLocaleString()}
+                </span>
               </>
             )}
           </p>
