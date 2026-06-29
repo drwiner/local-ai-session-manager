@@ -71,7 +71,7 @@ export async function indexCodexSession(filePath: string): Promise<{
   const turns: AccumulatorTurn[] = [];
   let cur: AccumulatorTurn | null = null;
 
-  const openTurn = (role: "user" | "assistant", ts: string | null, byteStart: number) => {
+  const openTurn = (role: "user" | "assistant", ts: string | null, byteStart: number): AccumulatorTurn => {
     if (cur) turns.push(cur);
     cur = {
       index: turns.length,
@@ -84,6 +84,7 @@ export async function indexCodexSession(filePath: string): Promise<{
       hasThinking: false,
       toolNames: [],
     };
+    return cur;
   };
 
   for await (const { value, byteStart, byteEnd } of streamJsonl<CodexRecord>(filePath)) {
@@ -118,7 +119,7 @@ export async function indexCodexSession(filePath: string): Promise<{
         if (!firstPrompt && text.length > 0) firstPrompt = truncate(text, 200);
         messageCount += 1;
         if (ts) lastUserTs = ts;
-        openTurn("user", ts, byteStart);
+        cur = openTurn("user", ts, byteStart);
         if (cur) {
           cur.byteEnd = byteEnd;
           cur.userText = text;
@@ -126,7 +127,7 @@ export async function indexCodexSession(filePath: string): Promise<{
         continue;
       }
       if (t === "agent_message") {
-        if (!cur) openTurn("assistant", ts, byteStart);
+        if (!cur) cur = openTurn("assistant", ts, byteStart);
         if (cur) {
           cur.byteEnd = byteEnd;
           const text = typeof payload.message === "string" ? payload.message : "";
@@ -146,7 +147,7 @@ export async function indexCodexSession(filePath: string): Promise<{
         const role = payload.role as string | undefined;
         if (role === "assistant") {
           messageCount += 1;
-          if (!cur) openTurn("assistant", ts, byteStart);
+          if (!cur) cur = openTurn("assistant", ts, byteStart);
           if (cur) cur.byteEnd = byteEnd;
         } else {
           // `developer` and `user` (environment_context) — not a turn boundary.

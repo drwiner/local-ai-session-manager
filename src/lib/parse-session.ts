@@ -85,7 +85,7 @@ export async function indexSession(filePath: string): Promise<{
   const turns: AccumulatorTurn[] = [];
   let cur: AccumulatorTurn | null = null;
 
-  const openTurn = (role: "user" | "assistant", ts: string | null, byteStart: number) => {
+  const openTurn = (role: "user" | "assistant", ts: string | null, byteStart: number): AccumulatorTurn => {
     if (cur) turns.push(cur);
     cur = {
       index: turns.length,
@@ -100,6 +100,7 @@ export async function indexSession(filePath: string): Promise<{
       toolUseIds: [],
       toolInputs: {},
     };
+    return cur;
   };
 
   for await (const { value, byteStart, byteEnd } of streamJsonl<SessionRecord>(filePath)) {
@@ -130,7 +131,7 @@ export async function indexSession(filePath: string): Promise<{
         if (!firstPrompt && text.length > 0) firstPrompt = truncate(text, 200);
         messageCount += 1;
         if (ts) lastUserTs = ts;
-        openTurn("user", ts, byteStart);
+        cur = openTurn("user", ts, byteStart);
         if (cur) {
           cur.byteEnd = byteEnd;
           cur.userText = text;
@@ -142,7 +143,7 @@ export async function indexSession(filePath: string): Promise<{
         if (cur) {
           cur.byteEnd = byteEnd;
         } else {
-          openTurn("user", ts, byteStart);
+          cur = openTurn("user", ts, byteStart);
         }
         continue;
       }
@@ -156,7 +157,7 @@ export async function indexSession(filePath: string): Promise<{
       const rec = value as AssistantRecord;
       if (!model && rec.message?.model) model = rec.message.model;
       // If there is no current user turn, start an assistant-led turn (rare; sidechain agent files do this)
-      if (!cur) openTurn("assistant", ts, byteStart);
+      if (!cur) cur = openTurn("assistant", ts, byteStart);
       if (!cur) continue;
       cur.byteEnd = byteEnd;
       const content = rec.message?.content ?? [];
