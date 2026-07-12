@@ -8,6 +8,7 @@
     "build": "next build",
     "start": "next start",
     "reindex": "tsx scripts/reindex.ts",
+    "repair-origins": "tsx scripts/repair-origin-hosts.ts",
     "lint": "next lint"
   },
   "dependencies": {

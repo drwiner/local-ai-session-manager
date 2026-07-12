@@ -195,7 +195,7 @@ async function indexOneSession(args: IndexOneArgs): Promise<boolean> {
   const stat = await fsp.stat(args.filePath);
   const fileMtime = stat.mtimeMs;
   const fileSize = stat.size;
-  const originHost = resolveOriginHost(args.filePath);
+  const originHost = await resolveOriginHost(args.filePath);
 
   const db = getDb();
   const existing = db

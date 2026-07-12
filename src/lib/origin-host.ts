@@ -1,6 +1,8 @@
 import fs from "fs";
 import os from "os";
 
+import { resolveOriginViaSyncthing } from "./syncthing";
+
 export const LOCAL_HOST = os.hostname();
 
 interface OriginSidecar {
@@ -10,6 +12,35 @@ interface OriginSidecar {
 
 function sidecarPath(jsonlPath: string): string {
   return `${jsonlPath}.host.json`;
+}
+
+function readSidecarHost(jsonlPath: string): string | null {
+  try {
+    const raw = fs.readFileSync(sidecarPath(jsonlPath), "utf8");
+    const parsed = JSON.parse(raw) as Partial<OriginSidecar>;
+    if (typeof parsed.hostname === "string" && parsed.hostname.length > 0) {
+      return parsed.hostname;
+    }
+  } catch {
+    // missing, corrupt, or unreadable
+  }
+  return null;
+}
+
+/**
+ * Overwrite the origin sidecar with an authoritative hostname. Unlike the
+ * first-writer-wins claim in the heuristic path, this always wins: it exists
+ * to correct sidecars that an earlier indexing race attributed to the wrong
+ * machine. No-ops when the sidecar already agrees.
+ */
+function writeAuthoritativeSidecar(jsonlPath: string, hostname: string): void {
+  if (readSidecarHost(jsonlPath) === hostname) return;
+  const payload: OriginSidecar = { hostname, claimedAt: Date.now() };
+  try {
+    fs.writeFileSync(sidecarPath(jsonlPath), JSON.stringify(payload));
+  } catch {
+    // best-effort; a stale sidecar is corrected on the next successful run
+  }
 }
 
 /**
@@ -23,33 +54,33 @@ function sidecarPath(jsonlPath: string): string {
 const IMPORT_BIRTHTIME_SLACK_MS = 10 * 60 * 1000;
 
 /**
- * Look up the originating host for a session JSONL. The first machine to
- * index a session writes a `<file>.host.json` sidecar claiming it for its
- * hostname; Syncthing then distributes the sidecar alongside the JSONL so
- * every other machine reads the same answer.
+ * Look up the originating host for a session JSONL.
  *
- * When no sidecar exists, we use the birthtime-vs-mtime heuristic to
- * decide whether claiming for the local host is safe: Syncthing preserves
- * mtime from the source but creates the file fresh on the receiving side,
- * leaving a wide birthtime/mtime gap on imports. Files that look local
- * (birthtime ≈ mtime) get claimed; suspected imports are left unclaimed.
+ * Preferred source: Syncthing's own file metadata, which records the device
+ * that last modified each synced file. Because a session JSONL is only ever
+ * appended to by the single machine running that session, that device is the
+ * true author — unambiguous even while the session is actively syncing. When
+ * Syncthing answers, we (re)write the sidecar so offline machines and the DB
+ * converge on the correct value, healing any earlier misattribution.
  *
- * Returns the resolved hostname, or null when no sidecar exists and the
- * file looks imported (or we couldn't write the claim).
+ * Fallback (Syncthing not installed, file outside a synced folder, or not yet
+ * in Syncthing's index): the legacy first-writer-wins sidecar. The first
+ * machine to index a session writes a `<file>.host.json` claiming it; when no
+ * sidecar exists we use a birthtime-vs-mtime heuristic to avoid claiming a
+ * freshly-synced import for the local host. This path is racy for
+ * actively-syncing sessions, which is exactly why Syncthing is preferred.
+ *
+ * Returns the resolved hostname, or null when it can't be determined.
  */
-export function resolveOriginHost(jsonlPath: string): string | null {
-  const sp = sidecarPath(jsonlPath);
-  try {
-    const raw = fs.readFileSync(sp, "utf8");
-    const parsed = JSON.parse(raw) as Partial<OriginSidecar>;
-    if (typeof parsed.hostname === "string" && parsed.hostname.length > 0) {
-      return parsed.hostname;
-    }
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
-      // Corrupt or unreadable sidecar — fall through and try to rewrite.
-    }
+export async function resolveOriginHost(jsonlPath: string): Promise<string | null> {
+  const viaSyncthing = await resolveOriginViaSyncthing(jsonlPath);
+  if (viaSyncthing) {
+    writeAuthoritativeSidecar(jsonlPath, viaSyncthing);
+    return viaSyncthing;
   }
+
+  const sidecarHost = readSidecarHost(jsonlPath);
+  if (sidecarHost) return sidecarHost;
 
   let looksLocal = true;
   try {
@@ -64,19 +95,12 @@ export function resolveOriginHost(jsonlPath: string): string | null {
 
   const payload: OriginSidecar = { hostname: LOCAL_HOST, claimedAt: Date.now() };
   try {
-    fs.writeFileSync(sp, JSON.stringify(payload), { flag: "wx" });
+    fs.writeFileSync(sidecarPath(jsonlPath), JSON.stringify(payload), { flag: "wx" });
     return LOCAL_HOST;
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "EEXIST") {
-      try {
-        const raw = fs.readFileSync(sp, "utf8");
-        const parsed = JSON.parse(raw) as Partial<OriginSidecar>;
-        if (typeof parsed.hostname === "string" && parsed.hostname.length > 0) {
-          return parsed.hostname;
-        }
-      } catch {
-        return null;
-      }
+      // Lost the claim race to another indexer on this machine; read theirs.
+      return readSidecarHost(jsonlPath);
     }
     return null;
   }
